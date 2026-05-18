@@ -338,13 +338,53 @@ function buildMenus() {
         });
 
         if (categoryCache.length > 0) {
-            categoryCache.forEach(cat => {
-                chrome.contextMenus.create({
-                    id: \`save_to_\${cat.id}\`,
-                    parentId: "cloudnav_root",
-                    title: cat.name,
-                    contexts: ["page", "link", "action"]
-                });
+            const parents = categoryCache.filter(c => !c.parentId);
+            parents.forEach(cat => {
+                const subCats = categoryCache.filter(c => c.parentId === cat.id);
+                
+                if (subCats.length > 0) {
+                    // 有二级分类，创建父级菜单
+                    chrome.contextMenus.create({
+                        id: \`parent_\${cat.id}\`,
+                        parentId: "cloudnav_root",
+                        title: cat.name,
+                        contexts: ["page", "link", "action"]
+                    });
+
+                    // 在父级菜单下添加“保存到 [当前分类]”选项
+                    chrome.contextMenus.create({
+                        id: \`save_to_\${cat.id}\`,
+                        parentId: \`parent_\${cat.id}\`,
+                        title: \`保存到 \${cat.name}\`,
+                        contexts: ["page", "link", "action"]
+                    });
+
+                    // 添加分隔符
+                    chrome.contextMenus.create({
+                        id: \`sep_\${cat.id}\`,
+                        parentId: \`parent_\${cat.id}\`,
+                        type: "separator",
+                        contexts: ["page", "link", "action"]
+                    });
+
+                    // 添加二级分类
+                    subCats.forEach(sub => {
+                        chrome.contextMenus.create({
+                            id: \`save_to_\${sub.id}\`,
+                            parentId: \`parent_\${cat.id}\`,
+                            title: sub.name,
+                            contexts: ["page", "link", "action"]
+                        });
+                    });
+                } else {
+                    // 没有二级分类，直接显示
+                    chrome.contextMenus.create({
+                        id: \`save_to_\${cat.id}\`,
+                        parentId: "cloudnav_root",
+                        title: cat.name,
+                        contexts: ["page", "link", "action"]
+                    });
+                }
             });
         } else {
             chrome.contextMenus.create({
@@ -493,6 +533,13 @@ function notify(title, message) {
         .cat-links { display: none; padding-left: 8px; margin-bottom: 8px; }
         .cat-header.active + .cat-links { display: block; }
         
+        .sub-cat-group { margin-top: 8px; margin-bottom: 4px; }
+        .sub-cat-title { 
+            padding: 4px 8px; font-size: 11px; font-weight: 700; color: var(--muted); 
+            text-transform: uppercase; letter-spacing: 0.05em; display: flex; items-center; gap: 4px;
+        }
+        .sub-cat-title::before { content: ""; width: 4px; height: 4px; background: var(--accent); border-radius: 50%; opacity: 0.5; }
+
         .link-item { display: flex; items-center; gap: 8px; padding: 6px 8px; border-radius: 6px; text-decoration: none; color: var(--text); transition: background 0.1s; border-left: 2px solid transparent; }
         .link-item:hover { background: var(--hover); border-left-color: var(--accent); }
         .link-icon { width: 16px; height: 16px; flex-shrink: 0; display: flex; items-center; justify-content: center; overflow: hidden; }
@@ -592,17 +639,24 @@ document.addEventListener('DOMContentLoaded', async () => {
         
         const isSearching = q.length > 0;
 
-        allCategories.forEach(cat => {
-            const catLinks = allLinks.filter(l => {
-                const inCat = l.categoryId === cat.id;
-                if (!inCat) return false;
-                if (!q) return true;
-                return l.title.toLowerCase().includes(q) || 
-                       l.url.toLowerCase().includes(q) || 
-                       (l.description && l.description.toLowerCase().includes(q));
-            });
+        const parents = allCategories.filter(c => !c.parentId);
 
-            if (catLinks.length === 0) return;
+        parents.forEach(cat => {
+            const subCats = allCategories.filter(sc => sc.parentId === cat.id);
+            const directLinks = allLinks.filter(l => l.categoryId === cat.id);
+            
+            const matchesQuery = (l) => !q || 
+                                       l.title.toLowerCase().includes(q) || 
+                                       l.url.toLowerCase().includes(q) || 
+                                       (l.description && l.description.toLowerCase().includes(q));
+
+            const filteredDirectLinks = directLinks.filter(matchesQuery);
+            const subCatResults = subCats.map(sc => ({
+                ...sc,
+                links: allLinks.filter(l => l.categoryId === sc.id).filter(matchesQuery)
+            })).filter(res => res.links.length > 0);
+
+            if (filteredDirectLinks.length === 0 && subCatResults.length === 0) return;
             hasContent = true;
 
             const isOpen = expandedCats.has(cat.id) || isSearching;
@@ -617,7 +671,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 <div class="cat-links">
             \`;
             
-            catLinks.forEach(link => {
+            // 渲染直接属于父分类的链接
+            filteredDirectLinks.forEach(link => {
                 const iconSrc = getFaviconUrl(link.url);
                 html += \`
                     <a href="\${link.url}" target="_blank" class="link-item">
@@ -626,6 +681,26 @@ document.addEventListener('DOMContentLoaded', async () => {
                             <div class="link-title">\${link.title}</div>
                         </div>
                     </a>
+                \`;
+            });
+
+            // 渲染二级分类及其链接
+            subCatResults.forEach(sub => {
+                html += \`
+                    <div class="sub-cat-group">
+                        <div class="sub-cat-title">\${sub.name}</div>
+                        \${sub.links.map(link => {
+                            const iconSrc = getFaviconUrl(link.url);
+                            return \`
+                                <a href="\${link.url}" target="_blank" class="link-item" style="margin-left: 8px;">
+                                    <div class="link-icon"><img src="\${iconSrc}" /></div>
+                                    <div class="link-info">
+                                        <div class="link-title">\${link.title}</div>
+                                    </div>
+                                </a>
+                            \`;
+                        }).join('')}
+                    </div>
                 \`;
             });
 
